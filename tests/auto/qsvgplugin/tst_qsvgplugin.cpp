@@ -135,7 +135,12 @@ void tst_QSvgPlugin::checkImageInclude()
     QCOMPARE(logMessages.at(0), QString("Could not create image from \"%1notExisting.svg\"").arg(SRCDIR));
     QCOMPARE(logMessages.at(1), QString("Could not create image from \"%1./notExisting.svg\"").arg(SRCDIR));
     QCOMPARE(logMessages.at(2), QString("Could not create image from \"%1../notExisting.svg\"").arg(SRCDIR));
+#ifdef Q_OS_DOSLIKE
+    // Support non-boot drive as the current one (QDir::rootPath always returns the boot one)
+    QCOMPARE(logMessages.at(3), QString("Could not create image from \"%1notExisting.svg\"").arg(QDir::current().absoluteFilePath(QString("/"))));
+#else
     QCOMPARE(logMessages.at(3), QString("Could not create image from \"%1notExisting.svg\"").arg(QDir::rootPath()));
+#endif
     QCOMPARE(logMessages.at(4), QLatin1String("Could not create image from \":/notExisting.svg\""));
     QCOMPARE(logMessages.at(5), QLatin1String("Could not create image from \"qrc:///notExisting.svg\""));
     QCOMPARE(logMessages.at(6), QLatin1String("Could not create image from \"file:///notExisting.svg\""));
