@@ -1,4 +1,5 @@
 TARGET  = qsvgicon
+os2:TARGET = qsvgico
 
 HEADERS += qsvgiconengine.h
 SOURCES += main.cpp \
