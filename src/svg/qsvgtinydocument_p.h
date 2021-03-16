@@ -67,6 +67,7 @@ QT_BEGIN_NAMESPACE
 class QPainter;
 class QByteArray;
 class QSvgFont;
+class QTransform;
 
 class Q_SVG_PRIVATE_EXPORT QSvgTinyDocument : public QSvgStructureNode
 {
@@ -88,6 +89,7 @@ public:
     bool heightPercent() const;
 
     bool preserveAspectRatio() const;
+    void setPreserveAspectRatio(bool on);
 
     QRectF viewBox() const;
     void setViewBox(const QRectF &rect);
@@ -99,7 +101,7 @@ public:
     void draw(QPainter *p, const QString &id,
               const QRectF &bounds=QRectF());
 
-    QMatrix matrixForElement(const QString &id) const;
+    QTransform transformForElement(const QString &id) const;
     QRectF boundsOnElement(const QString &id) const;
     bool   elementExists(const QString &id) const;
 
@@ -125,13 +127,15 @@ private:
     bool   m_widthPercent;
     bool   m_heightPercent;
 
+    mutable bool m_implicitViewBox = true;
     mutable QRectF m_viewBox;
+    bool m_preserveAspectRatio = false;
 
     QHash<QString, QSvgRefCounter<QSvgFont> > m_fonts;
     QHash<QString, QSvgNode *> m_namedNodes;
     QHash<QString, QSvgRefCounter<QSvgFillStyleProperty> > m_namedStyles;
 
-    QTime m_time;
+    qint64 m_time;
     bool  m_animated;
     int   m_animationDuration;
     int   m_fps;
@@ -173,20 +177,22 @@ inline bool QSvgTinyDocument::heightPercent() const
 
 inline QRectF QSvgTinyDocument::viewBox() const
 {
-    if (m_viewBox.isNull())
+    if (m_viewBox.isNull()) {
         m_viewBox = transformedBounds();
+        m_implicitViewBox = true;
+    }
 
     return m_viewBox;
 }
 
 inline bool QSvgTinyDocument::preserveAspectRatio() const
 {
-    return false;
+    return m_preserveAspectRatio;
 }
 
 inline int QSvgTinyDocument::currentElapsed() const
 {
-    return m_time.elapsed();
+    return QDateTime::currentMSecsSinceEpoch() - m_time;
 }
 
 inline int QSvgTinyDocument::animationDuration() const

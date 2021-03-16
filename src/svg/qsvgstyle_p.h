@@ -54,7 +54,7 @@
 #include "QtGui/qpainter.h"
 #include "QtGui/qpen.h"
 #include "QtGui/qbrush.h"
-#include "QtGui/qmatrix.h"
+#include "QtGui/qtransform.h"
 #include "QtGui/qcolor.h"
 #include "QtGui/qfont.h"
 #include <qdebug.h>
@@ -145,6 +145,8 @@ struct Q_SVG_PRIVATE_EXPORT QSvgExtraStates
     int fontWeight;
     Qt::FillRule fillRule;
     qreal strokeDashOffset;
+    int nestedUseLevel = 0;
+    int nestedUseCount = 0;
     bool vectorEffect; // true if pen is cosmetic
 };
 
@@ -346,7 +348,7 @@ public:
 
     void setFamily(const QString &family)
     {
-        m_qfont.setFamily(family);
+        m_qfont.setFamilies({family});
         m_familySet = 1;
     }
 
@@ -579,10 +581,10 @@ public:
     void resolveStops();
     void resolveStops_helper(QStringList *visited);
 
-    void setMatrix(const QMatrix &matrix);
-    QMatrix  qmatrix() const
+    void setTransform(const QTransform &transform);
+    QTransform qtransform() const
     {
-        return m_matrix;
+        return m_transform;
     }
 
     QGradient *qgradient() const
@@ -603,7 +605,7 @@ public:
     QBrush brush(QPainter *, QSvgExtraStates &) override;
 private:
     QGradient      *m_gradient;
-    QMatrix m_matrix;
+    QTransform m_transform;
 
     QSvgTinyDocument *m_doc;
     QString           m_link;

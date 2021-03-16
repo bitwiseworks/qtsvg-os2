@@ -48,6 +48,7 @@
 #include "qbytearray.h"
 #include "qqueue.h"
 #include "qstack.h"
+#include "qtransform.h"
 #include "qdebug.h"
 
 #ifndef QT_NO_COMPRESS
@@ -60,6 +61,7 @@ QSvgTinyDocument::QSvgTinyDocument()
     : QSvgStructureNode(0)
     , m_widthPercent(false)
     , m_heightPercent(false)
+    , m_time(0)
     , m_animated(false)
     , m_animationDuration(0)
     , m_fps(30)
@@ -71,13 +73,15 @@ QSvgTinyDocument::~QSvgTinyDocument()
 }
 
 #ifndef QT_NO_COMPRESS
+static QByteArray qt_inflateSvgzDataFrom(QIODevice *device, bool doCheckContent = true);
 #   ifdef QT_BUILD_INTERNAL
-Q_AUTOTEST_EXPORT QByteArray qt_inflateGZipDataFrom(QIODevice *device);
-#   else
-static QByteArray qt_inflateGZipDataFrom(QIODevice *device);
+Q_AUTOTEST_EXPORT QByteArray qt_inflateGZipDataFrom(QIODevice *device)
+{
+    return qt_inflateSvgzDataFrom(device, false); // autotest wants unchecked result
+}
 #   endif
 
-QByteArray qt_inflateGZipDataFrom(QIODevice *device)
+static QByteArray qt_inflateSvgzDataFrom(QIODevice *device, bool doCheckContent)
 {
     if (!device)
         return QByteArray();
@@ -125,6 +129,12 @@ QByteArray qt_inflateGZipDataFrom(QIODevice *device)
         do {
             // Prepare the destination buffer
             int oldSize = destination.size();
+            if (oldSize > INT_MAX - CHUNK_SIZE) {
+                inflateEnd(&zlibStream);
+                qCWarning(lcSvgHandler, "Error while inflating gzip file: integer size overflow");
+                return QByteArray();
+            }
+
             destination.resize(oldSize + CHUNK_SIZE);
             zlibStream.next_out = reinterpret_cast<Bytef*>(
                     destination.data() + oldSize - zlibStream.avail_out);
@@ -139,14 +149,24 @@ QByteArray qt_inflateGZipDataFrom(QIODevice *device)
                     inflateEnd(&zlibStream);
                     qCWarning(lcSvgHandler, "Error while inflating gzip file: %s",
                             (zlibStream.msg != NULL ? zlibStream.msg : "Unknown error"));
-                    destination.chop(zlibStream.avail_out);
-                    return destination;
+                    return QByteArray();
                 }
             }
 
         // If the output buffer still has more room after calling inflate
         // it means we have to provide more data, so exit the loop here
         } while (!zlibStream.avail_out);
+
+        if (doCheckContent) {
+            // Quick format check, equivalent to QSvgIOHandler::canRead()
+            QByteArray buf = destination.left(16);
+            if (!buf.contains("<?xml") && !buf.contains("<svg") && !buf.contains("<!--") && !buf.contains("<!DOCTYPE svg")) {
+                inflateEnd(&zlibStream);
+                qCWarning(lcSvgHandler, "Error while inflating gzip file: SVG format check failed");
+                return QByteArray();
+            }
+            doCheckContent = false; // Run only once, on first chunk
+        }
 
         if (zlibResult == Z_STREAM_END) {
             // Make sure there are no more members to process before exiting
@@ -161,6 +181,11 @@ QByteArray qt_inflateGZipDataFrom(QIODevice *device)
     inflateEnd(&zlibStream);
     return destination;
 }
+#else
+static QByteArray qt_inflateSvgzDataFrom(QIODevice *)
+{
+    return QByteArray();
+}
 #endif
 
 QSvgTinyDocument * QSvgTinyDocument::load(const QString &fileName)
@@ -172,12 +197,10 @@ QSvgTinyDocument * QSvgTinyDocument::load(const QString &fileName)
         return 0;
     }
 
-#ifndef QT_NO_COMPRESS
     if (fileName.endsWith(QLatin1String(".svgz"), Qt::CaseInsensitive)
             || fileName.endsWith(QLatin1String(".svg.gz"), Qt::CaseInsensitive)) {
-        return load(qt_inflateGZipDataFrom(&file));
+        return load(qt_inflateSvgzDataFrom(&file));
     }
-#endif
 
     QSvgTinyDocument *doc = 0;
     QSvgHandler handler(&file);
@@ -194,17 +217,24 @@ QSvgTinyDocument * QSvgTinyDocument::load(const QString &fileName)
 
 QSvgTinyDocument * QSvgTinyDocument::load(const QByteArray &contents)
 {
-#ifndef QT_NO_COMPRESS
+    QByteArray svg;
     // Check for gzip magic number and inflate if appropriate
     if (contents.startsWith("\x1f\x8b")) {
-        QBuffer buffer(const_cast<QByteArray *>(&contents));
-        return load(qt_inflateGZipDataFrom(&buffer));
+        QBuffer buffer;
+        buffer.setData(contents);
+        svg = qt_inflateSvgzDataFrom(&buffer);
+    } else {
+        svg = contents;
     }
-#endif
+    if (svg.isNull())
+        return nullptr;
 
-    QSvgHandler handler(contents);
+    QBuffer buffer;
+    buffer.setData(svg);
+    buffer.open(QIODevice::ReadOnly);
+    QSvgHandler handler(&buffer);
 
-    QSvgTinyDocument *doc = 0;
+    QSvgTinyDocument *doc = nullptr;
     if (handler.ok()) {
         doc = handler.document();
         doc->m_animationDuration = handler.animationDuration();
@@ -230,9 +260,8 @@ QSvgTinyDocument * QSvgTinyDocument::load(QXmlStreamReader *contents)
 
 void QSvgTinyDocument::draw(QPainter *p, const QRectF &bounds)
 {
-    if (m_time.isNull()) {
-        m_time.start();
-    }
+    if (m_time == 0)
+        m_time = QDateTime::currentMSecsSinceEpoch();
 
     if (displayMode() == QSvgNode::NoneMode)
         return;
@@ -269,9 +298,8 @@ void QSvgTinyDocument::draw(QPainter *p, const QString &id,
         qCDebug(lcSvgHandler, "Couldn't find node %s. Skipping rendering.", qPrintable(id));
         return;
     }
-    if (m_time.isNull()) {
-        m_time.start();
-    }
+    if (m_time == 0)
+        m_time = QDateTime::currentMSecsSinceEpoch();
 
     if (node->displayMode() == QSvgNode::NoneMode)
         return;
@@ -336,9 +364,15 @@ void QSvgTinyDocument::setHeight(int len, bool percent)
     m_heightPercent = percent;
 }
 
+void QSvgTinyDocument::setPreserveAspectRatio(bool on)
+{
+    m_preserveAspectRatio = on;
+}
+
 void QSvgTinyDocument::setViewBox(const QRectF &rect)
 {
     m_viewBox = rect;
+    m_implicitViewBox = rect.isNull();
 }
 
 void QSvgTinyDocument::addSvgFont(QSvgFont *font)
@@ -376,7 +410,7 @@ QSvgFillStyleProperty *QSvgTinyDocument::namedStyle(const QString &id) const
 
 void QSvgTinyDocument::restartAnimation()
 {
-    m_time.restart();
+    m_time = QDateTime::currentMSecsSinceEpoch();
 }
 
 bool QSvgTinyDocument::animated() const
@@ -402,11 +436,11 @@ void QSvgTinyDocument::draw(QPainter *p, QSvgExtraStates &)
 void QSvgTinyDocument::mapSourceToTarget(QPainter *p, const QRectF &targetRect, const QRectF &sourceRect)
 {
     QRectF target = targetRect;
-    if (target.isNull()) {
+    if (target.isEmpty()) {
         QPaintDevice *dev = p->device();
         QRectF deviceRect(0, 0, dev->width(), dev->height());
-        if (deviceRect.isNull()) {
-            if (sourceRect.isNull())
+        if (deviceRect.isEmpty()) {
+            if (sourceRect.isEmpty())
                 target = QRectF(QPointF(0, 0), size());
             else
                 target = QRectF(QPointF(0, 0), sourceRect.size());
@@ -416,18 +450,42 @@ void QSvgTinyDocument::mapSourceToTarget(QPainter *p, const QRectF &targetRect, 
     }
 
     QRectF source = sourceRect;
-    if (source.isNull())
+    if (source.isEmpty())
         source = viewBox();
 
-    if (source != target && !source.isNull()) {
-        QTransform transform;
-        transform.scale(target.width() / source.width(),
-                  target.height() / source.height());
-        QRectF c2 = transform.mapRect(source);
-        p->translate(target.x() - c2.x(),
-                     target.y() - c2.y());
-        p->scale(target.width() / source.width(),
-                 target.height() / source.height());
+    if (source != target && !qFuzzyIsNull(source.width()) && !qFuzzyIsNull(source.height())) {
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 15, 0))
+        if (m_implicitViewBox || !preserveAspectRatio()) {
+            // Code path used when no view box is set, or IgnoreAspectRatio requested
+#endif
+            QTransform transform;
+            transform.scale(target.width() / source.width(),
+                            target.height() / source.height());
+            QRectF c2 = transform.mapRect(source);
+            p->translate(target.x() - c2.x(),
+                         target.y() - c2.y());
+            p->scale(target.width() / source.width(),
+                     target.height() / source.height());
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 15, 0))
+        } else {
+            // Code path used when KeepAspectRatio is requested. This attempts to emulate the default values
+            // of the <preserveAspectRatio tag that's implicitly defined when <viewbox> is used.
+
+            // Scale the view box into the view port (target) by preserve the aspect ratio.
+            QSizeF viewBoxSize = source.size();
+            viewBoxSize.scale(target.width(), target.height(), Qt::KeepAspectRatio);
+
+            // Center the view box in the view port
+            p->translate(target.x() + (target.width() - viewBoxSize.width()) / 2,
+                         target.y() + (target.height() - viewBoxSize.height()) / 2);
+
+            p->scale(viewBoxSize.width() / source.width(),
+                     viewBoxSize.height() / source.height());
+
+            // Apply the view box translation if specified.
+            p->translate(-source.x(), -source.y());
+        }
+#endif
     }
 }
 
@@ -446,13 +504,13 @@ bool QSvgTinyDocument::elementExists(const QString &id) const
     return (node!=0);
 }
 
-QMatrix QSvgTinyDocument::matrixForElement(const QString &id) const
+QTransform QSvgTinyDocument::transformForElement(const QString &id) const
 {
     QSvgNode *node = scopeNode(id);
 
     if (!node) {
         qCDebug(lcSvgHandler, "Couldn't find node %s. Skipping rendering.", qPrintable(id));
-        return QMatrix();
+        return QTransform();
     }
 
     QTransform t;
@@ -464,12 +522,12 @@ QMatrix QSvgTinyDocument::matrixForElement(const QString &id) const
         node = node->parent();
     }
 
-    return t.toAffine();
+    return t;
 }
 
 int QSvgTinyDocument::currentFrame() const
 {
-    double runningPercentage = qMin(m_time.elapsed()/double(m_animationDuration), 1.);
+    double runningPercentage = qMin(currentElapsed() / double(m_animationDuration), 1.);
 
     int totalFrames = m_fps * m_animationDuration;
 
@@ -482,8 +540,8 @@ void QSvgTinyDocument::setCurrentFrame(int frame)
     double framePercentage = frame/double(totalFrames);
     double timeForFrame = m_animationDuration * framePercentage; //in S
     timeForFrame *= 1000; //in ms
-    int timeToAdd = int(timeForFrame - m_time.elapsed());
-    m_time = m_time.addMSecs(timeToAdd);
+    int timeToAdd = int(timeForFrame - currentElapsed());
+    m_time += timeToAdd;
 }
 
 void QSvgTinyDocument::setFramesPerSecond(int num)
