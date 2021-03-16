@@ -128,7 +128,7 @@ public:
     int animationDuration() const;
 
 #ifndef QT_NO_CSSPARSER
-    void parseCSStoXMLAttrs(QString css, QVector<QSvgCssAttribute> *attributes);
+    void parseCSStoXMLAttrs(const QString &css, QVector<QSvgCssAttribute> *attributes);
 #endif
 
     inline QPen defaultPen() const
@@ -178,7 +178,7 @@ private:
     QCss::Parser m_cssParser;
 #endif
     void parse();
-    void resolveGradients(QSvgNode *node);
+    void resolveGradients(QSvgNode *node, int nestedDepth = 0);
     void resolveNodes();
 
     QPen m_defaultPen;
